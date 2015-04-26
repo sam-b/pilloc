@@ -1,5 +1,6 @@
 #include "pin.H"
 #include <iostream>
+#include <sstream>
 #include <fstream>
 #include <vector>
 #include <set>
@@ -27,6 +28,25 @@ class Empty;
 
 void generate_html(void);
 
+string ADDRINTToString (ADDRINT a)
+{
+    ostringstream temp;
+    temp << "0x" << hex <<a;
+    return temp.str();
+}
+
+string IntToString (int a)
+{
+    ostringstream temp;
+    temp<<a;
+    return temp.str();
+}
+
+int RandU(int nMin, int nMax)
+{
+    return nMin + (int)((double)rand() / (RAND_MAX) * (nMax-nMin+1));
+}
+
 std::ofstream TraceFile;
 
 int unit_width = 10;
@@ -41,13 +61,13 @@ public:
     ADDRINT start();
     ADDRINT end();
     string gen_html(int);
+    string color;
     string get_color();
     int header;
     int footer;
     int round;
     int minsz;
     bool error;
-    bool details;
     ADDRINT addr;
     ADDRINT size;
 private:
@@ -63,7 +83,12 @@ Block::Block()
     this->round = 0x10;
     this->minsz = 0x20;
     this->error = false;
-    this->details = false;
+    this->color = this->get_color();
+}
+
+Block::~Block()
+{
+
 }
 
 ADDRINT Block::start()
@@ -81,34 +106,37 @@ ADDRINT Block::end()
 
 string Block::get_color()
 {
-    return "";
+    string color = "background-color: rgb(";
+    color += IntToString(RandU(0,255));
+    color+=", ";
+    color+= IntToString(RandU(0,255));
+    color+=", ";
+    color += IntToString(RandU(0,255));
+    color+=");";
+    return color;
 }
 
 string Block::gen_html(int width)
 {
     string out = "";
-    string color = this->get_color();
+    string color = this->color;
     if(this->error){
         color += "background-image: repeating-linear-gradient(120deg, transparent, transparent 1.40em, #A85860 1.40em, #A85860 2.80em);";
     }
 
     out+="<div class=\"block normal\" style=\"width: ";
-    out+= 10 * width;
-    out+=";";
+    out+= IntToString(unit_width * width);
+    out+="em;";
     out+=color;
-    out+=" %s;\">";
-    if(this->details){
-        out+="<strong>";
-        out+= this->start();
-        out+="</strong><br />";
-        out+="+ ";
-        out+= (this->end() - this->start());
-        out+=" (";
-        out+= this->size;
-        out+=")";
-    } else {
-        out+="&nbsp;";
-    }
+    out+=";\">";
+    out+="<strong>";
+    out+= ADDRINTToString(this->start());
+    out+="</strong><br />";
+    out+="+ ";
+    out+= ADDRINTToString(this->end() - this->start());
+    out+=" (";
+    out+= ADDRINTToString(this->size);
+    out+=")";
 
     out+="</div>\n";
     return out;
@@ -118,30 +146,41 @@ string Block::gen_html(int width)
 class State
 {
 public:
-    State(vector<Block> blocks);
+    State(vector<Block>* old_blocks);
     ~State();
-    set<ADDRINT> boundaries();
-    vector<Block> blocks;
-    vector<string> errors;
-    vector<string> info;
+    set<ADDRINT>* boundaries();
+    vector<Block>* blocks;
+    string errors;
+    string info;
     ADDRINT toFree;
     ADDRINT toRealloc;
 };
 
-State::State(vector<Block> blocks)
+State::State(vector<Block>* old_blocks)
 {
-    this->blocks = blocks;
+    this->blocks = new vector<Block>();
+    if(!old_blocks->empty()){
+        this->blocks->insert(this->blocks->end(),old_blocks->begin(),old_blocks->end());
+    }
     this->toFree = 0;
     this->toRealloc = 0;
+    this->info = "";
+    this->errors = "";
 }
 
-set<ADDRINT> State::boundaries()
+State::~State()
 {
-    set<ADDRINT> bounds;
-    for(vector<Block>::iterator block = this->blocks.begin(); block != this->blocks.end(); ++block){
-        bounds.insert(block->start());
-        bounds.insert(block->end());
+
+}
+
+set<ADDRINT>* State::boundaries()
+{
+    set<ADDRINT>* bounds = new set<ADDRINT>();
+    for(vector<Block>::iterator block = this->blocks->begin(); block != this->blocks->end(); ++block){
+        bounds->insert(block->start());
+        bounds->insert(block->end());
     }
+    printf("Fetched bounderies - size:%lu\n",bounds->size());
     return bounds;
 }
 
@@ -161,17 +200,16 @@ Empty::Empty(){
 }
 
 string Empty::gen_html(int width){
-    string color = "???";
     string out = "<div class=\"";
     out += "block empty\" style=\"width: ";
-    out += 10 * width;
-    out+="; ";
-    out+=color;
+    out += IntToString(10);
+    out+="em; ";
     out+=";\">";
     out+= "<strong>";
-    out+=this->start;
+    out+=ADDRINTToString(this->start);
     out+="</strong><br />";
-    out += "+ " + (this->end - this->start);
+    out += "+ " + ADDRINTToString(this->end - this->start);
+    out+="</div>";
     return out;
 }
 /* ===================================================================== */
@@ -194,7 +232,7 @@ VOID MatchPtr(State state, ADDRINT addr,int *s, Block* match)
     }
 
     int i = 0;
-    for(vector<Block>::iterator block = state.blocks.begin(); block != state.blocks.end(); ++block){
+    for(vector<Block>::iterator block = state.blocks->begin(); block != state.blocks->end(); ++block){
         if(block->addr == addr){
             if(match == NULL or match->size >= block->size){
                 match = &(*block);
@@ -215,25 +253,24 @@ VOID MatchPtr(State state, ADDRINT addr,int *s, Block* match)
 /* ===================================================================== */
 
 VOID update_boundaries(State* state){
-    set<ADDRINT> bounds = state->boundaries();
-    boundaries.insert(bounds.begin(),bounds.end());
+    set<ADDRINT>* bounds = state->boundaries();
+    boundaries.insert(bounds->begin(),bounds->end());
 }
 
 VOID BeforeMalloc(CHAR * name, ADDRINT size)
 {
-    State* state = new State(timeline.end()->blocks);
+    printf("Before malloc\n");
+    State* state = new State(timeline.back().blocks);
     Block* b = new Block();
     b->size = size;
-    state->blocks.push_back(*b);
+    state->blocks->push_back(*b);
     timeline.push_back(*state);
 }
 
 VOID BeforeFree(CHAR * name, ADDRINT addr)
 {
-    State* state = new State(timeline.end()->blocks);
-    if(!addr){
-        return;
-    } 
+    printf("Before free\n");
+    State* state = new State(timeline.back().blocks);
     state->toFree = addr;
     timeline.push_back(*state);
 
@@ -241,73 +278,87 @@ VOID BeforeFree(CHAR * name, ADDRINT addr)
 
 VOID AfterFree(ADDRINT ret)
 {
+    printf("After free\n");
     State* state = &timeline.back();
+    state->info.append("free(" + ADDRINTToString(state->toFree) +") = " + ADDRINTToString(ret));
+    if(state->toFree == 0){
+        timeline.erase(timeline.end());
+        return;
+    }
     Block* match = NULL;
     int* s = NULL;
     MatchPtr(*state,state->toFree,s,match);
-
     if(!match){
+        state->toFree = 0;
         return;
     }
     if(!ret){
         //error
     }
     state->toFree = 0;
-    state->blocks.erase(state->blocks.begin()+*s);
+    state->blocks->erase(state->blocks->begin()+*s);
     update_boundaries(state);
 }
 
 VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 {
-    State* state = new State(timeline.end()->blocks);
+    printf("Before calloc\n");
+    vector<Block>* blocks = timeline.back().blocks;
+    State* state = new State(blocks);
     Block* b = new Block();
     b->size = num * size;
-    state->blocks.push_back(*b);
+    state->blocks->push_back(*b);
     timeline.push_back(*state);
 }
 
 VOID MallocAfter(ADDRINT ret)
 {
+    printf("After malloc\n");
     State* state = &timeline.back();
-    Block *b = &(state->blocks.back());
+    Block *b = &(state->blocks->back());
     if(!ret){
-         state->blocks.erase(state->blocks.end());
+         state->blocks->erase(state->blocks->end());
     } else {
         b->addr = ret;
     }
+    state->info.append("malloc(" + ADDRINTToString(b->size) +") = " + ADDRINTToString(ret));
     update_boundaries(state);
 }
 
 VOID CallocAfter(ADDRINT ret)
 {
+    printf("After calloc\n");
     State* state = &timeline.back();
-    Block *b = &(state->blocks.back());
+    Block *b = &(state->blocks->back());
     if(!ret){
-         state->blocks.erase(state->blocks.end());
+         state->blocks->erase(state->blocks->end());
     } else {
         b->addr = ret;
     }
+    state->info.append("calloc(" + ADDRINTToString(b->size) +") = " + ADDRINTToString(ret));
     update_boundaries(state);
 }
 
 VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
 {
+    printf("Before realloc\n");
     if(!addr){ //effectively a malloc
         BeforeMalloc(name,size);
     } else if(!size){ //effectively a free
         BeforeFree(name,addr);
     } else {
-        State* state = new State(timeline.end()->blocks);
+        State* state = new State(timeline.back().blocks);
         timeline.push_back(*state);
         state->toRealloc = addr;
         Block* block = new Block();
         block->size = size;
-        state->blocks.push_back(*block);
+        state->blocks->push_back(*block);
     }
 }
 
 VOID ReallocAfter(ADDRINT ret)
 {
+    printf("After realloc\n");
     State* state = &timeline.back();
     if(!state->toRealloc){
         if(!state->toFree){
@@ -319,17 +370,18 @@ VOID ReallocAfter(ADDRINT ret)
         Block* match = NULL;
         int* s = NULL;
         MatchPtr(*state,state->toRealloc,s,match);
+        state->toRealloc = 0;
         if(!match) return;
         if(!ret){
 
         } else {
-            Block* block = &(state->blocks.back());
+            Block* block = &(state->blocks->back());
             block->addr = ret;
-            Block newBlock = state->blocks.at(*s);
+            Block newBlock = state->blocks->at(*s);
             newBlock.size = block->size;
             newBlock.addr=ret;
-            state->blocks.erase(state->blocks.end());
-            state->toRealloc = 0;
+            state->blocks->erase(state->blocks->end());
+            state->info.append("realloc(" + ADDRINTToString(newBlock.size) +") = " + ADDRINTToString(ret));
         }
         update_boundaries(state);
     }
@@ -371,6 +423,8 @@ VOID Image(IMG img, VOID *v)
                        IARG_ADDRINT, FREE,
                        IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                        IARG_END);
+        RTN_InsertCall(freeRtn, IPOINT_AFTER, (AFUNPTR)AfterFree,
+                       IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
         RTN_Close(freeRtn);
     }
 
@@ -431,205 +485,149 @@ INT32 Usage()
 
 void print_state(State state)
 {
-     TraceFile << "<div class=\"state ";
-     if(state.errors.size()){
-         TraceFile << "error";
-     }
+    TraceFile << "<div class=\"state ";
+    if(state.errors.size()){
+        TraceFile << "error";
+    }
     TraceFile << "\">\n" << endl;
 
     set<int> known_stops;
 
     vector<Block> todo;
-    while(todo.size()){
+    todo.insert(todo.end(),state.blocks->begin(),state.blocks->end());
 
-         TraceFile << "<div class=\"line\" style=\"\">\n" << endl;
+    TraceFile << "<div class=\"line\" style=\"\">\n" << endl;
+    Block* current = NULL;
+    int i = 0;
+    int last = 0;
 
-        vector<Block> done;
-
-        Block* current = NULL;
-        int last = 0;
-        int i = -1;
-        for(set<ADDRINT>::iterator b = boundaries.begin(); b != boundaries.end(); ++b){
-            i++;
-            // If this block has size 0; make it continue until the
-            // next boundary anyway. The size will be displayed as
-            //0 or unknown anyway and it shouldn't be too confusing.
-            if(current && current->end() != *b && current->start() != current->end()){
-                continue;
-            }
-
-            if(current){  // stops here.
-                known_stops.insert(i);
-                current->gen_html(i - last);
-                done.push_back(*current);
-                last = i;
-            }
-
-            current = NULL;
-            for(vector<Block>::iterator block = state.blocks.begin(); block != state.blocks.end(); ++block){
+    for(set<ADDRINT>::iterator b = boundaries.begin(); b!=boundaries.end();++b){
+        if(!current){
+            for(vector<Block>::iterator block = state.blocks->begin();block != state.blocks->end();++block){
                 if(block->start() == *b){
                     current = &(*block);
-                    break;
-                }
-            }
-            if(!current) continue;
-
-            if(last != i){
-
-                // We want to show from previous known_stop.
-                for(int s = i+1;s>last;s--){
-                    if(known_stops.find(s) == known_stops.end()){
-                        break;
-                    }
-                    if(s != last){
-                        Empty emp = Empty();
+                    if(last != i){
+                        Empty* emp = new Empty();
                         set<ADDRINT>::iterator it = boundaries.begin();
                         advance(it, last);
-                        emp.start = *it;
-                        it = boundaries.begin();
-                        advance(it, s);
-                        emp.end = *it;
-                        TraceFile << emp.gen_html(s - last) << endl;
-                        known_stops.insert(s);
+                        emp->start = *it;
+                        emp->end = *b;
+                        TraceFile << emp->gen_html(i - last) << endl;
+                        delete emp;
+                        last = i;
                     }
-
-                    if(s != i){
-                        Empty emp = Empty();
-                        set<ADDRINT>::iterator it = boundaries.begin();
-                        advance(it, s);
-                        emp.start = *it;
-                        emp.end = *b;
-                        TraceFile << emp.gen_html(i - s) << endl;
-                        known_stops.insert(i);
-                    }
-                }
-                last = i;
-            }
-
-
-        if(current){
-            throw runtime_error("Block was started but never finished.");
-        }
-
-        if(!done.size()){
-            throw runtime_error("Some block(s) don't match boundaries.");
-        }
-
-        TraceFile << "</div>\n" << endl;
-        vector<Block> tmp;
-        for(vector<Block>::iterator x = todo.begin(); x != todo.end(); ++x){
-            for(vector<Block>::iterator y = done.begin(); y != done.end(); ++y){
-                if(y->addr == x->addr && y->size == x->size){
-                    tmp.push_back(*x);
                 }
             }
         }
-        todo = tmp;
+        if(!current){
+            //don't care
+        }else if(current->end() == *b){
+            TraceFile << current->gen_html(i - last) << endl;
+            last = i;
+            current = NULL;
+        }
+        i++;
     }
+    TraceFile << "</div>\n" << endl;
     TraceFile << "<div class=\"log\">" << endl;
     //TODO html escape
-    for(vector<string>::const_iterator msg = state.info.begin(); msg != state.info.end(); ++msg){
-        TraceFile << "<p>" << *msg << "</p>" << endl;
-    }
+    TraceFile << "<p>" << state.info << "</p>" << endl;
     
-    for(vector<string>::const_iterator msg = state.errors.begin(); msg != state.errors.end(); ++msg){
-        TraceFile << "<p>" << *msg << "</p>" << endl;
-    }
+    TraceFile << "<p>" << state.errors << "</p>" << endl;
 
-     TraceFile << "</div>\n" << endl;
+    TraceFile << "</div>\n" << endl;
 
-     TraceFile << "</div>\n" << endl;
-}
+    TraceFile << "</div>\n" << endl;
 }
 void generate_html()
 {
     TraceFile << "<style>" << endl;
-    TraceFile << "body {"
-"font-size: 12px;"
-"background-color: #EBEBEB;"
-"font-family: \"Lucida Console\", Monaco, monospace;"
+    TraceFile << "body {\n"
+"font-size: 12px;\n"
+"background-color: #EBEBEB;\n"
+"font-family: \"Lucida Console\", Monaco, monospace;\n"
 "width: "
-<< ((boundaries.size() - 1) * (unit_width + 1)) <<
-"dem;"
+<< IntToString((boundaries.size() - 1) * (unit_width+1)) <<
+"em;\n"
 "}"
 << endl;
 
-    TraceFile << "p {"
-"margin: 0.8em 0 0 0.1em;"
+    TraceFile << "p {\n"
+"margin: 0.8em 0 0 0.1em;\n"
 "}" << endl;
 
-    TraceFile << ".block {"
-"float: left;"
-"padding: 0.5em 0;"
-"text-align: center;"
-"color: black;"
+    TraceFile << ".block {\n"
+"float: left;\n"
+"padding: 0.5em 0;\n"
+"text-align: center;\n"
+"color: black;\n"
 "}" << endl;
 
-    TraceFile << ".normal {"
-"-webkit-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);"
-"-moz-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);"
-"box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);"
+    TraceFile << ".normal {\n"
+"-webkit-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+"-moz-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+"box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
 "}" << endl;
 
-    TraceFile << ".empty + .empty {"
-"border-left: 1px solid gray;"
-"margin-left: -1px;"
+    TraceFile << ".empty + .empty {\n"
+"border-left: 1px solid gray;\n"
+"margin-left: -1px;\n"
 "}" << endl;
 
-    TraceFile << ".empty {"
-"color: gray;"
+    TraceFile << ".empty {\n"
+"color: gray;\n"
 "}" << endl;
 
     TraceFile << ".line {  }" << endl;
 
-    TraceFile << ".line:after {"
-  "content:\"\";"
-  "display:table;"
-  "clear:both;"
+    TraceFile << ".line:after {\n"
+  "content:\"\";\n"
+  "display:table;\n"
+  "clear:both;\n"
 "}" << endl;
 
-    TraceFile << ".state {"
-"margin: 0.5em; padding: 0;"
-"background-color: white;"
-"border-radius: 0.3em;"
-"-webkit-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);"
-"-moz-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);"
-"box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);"
-"padding: 0.5em;"
+    TraceFile << ".state {\n"
+"margin: 0.5em; padding: 0;\n"
+"background-color: white;\n"
+"border-radius: 0.3em;\n"
+"-webkit-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+"-moz-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+"box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+"padding: 0.5em;\n"
 "}" << endl;
 
     TraceFile << ".log {"
 "}" << endl;
 
     TraceFile << ".error {"
-"color: white;"
-"background-color: #8b1820;"
+"color: white;\n"
+"background-color: #8b1820;\n"
 "}" << endl;
 
-    TraceFile << ".error .empty {"
-"color: white;"
+    TraceFile << ".error .empty {\n"
+"color: white;\n"
 "}" << endl;
 
     TraceFile << "</style>\n" << endl;
 
     TraceFile << "<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js\"></script>" << endl;
     TraceFile << "<script>"
-"var scrollTimeout = null;"
-"$(window).scroll(function(){"
-    "if (scrollTimeout) clearTimeout(scrollTimeout);"
-    "scrollTimeout = setTimeout(function(){"
-    "$('.log').stop();"
-    "$('.log').animate({"
-     "   'margin-left': $(this).scrollLeft()"
-    "}, 100);"
-    "}, 200);"
-"});"
+"var scrollTimeout = null;\n"
+"$(window).scroll(function(){\n"
+    "if (scrollTimeout) clearTimeout(scrollTimeout);\n"
+    "scrollTimeout = setTimeout(function(){\n"
+    "$('.log').stop();\n"
+    "$('.log').animate({\n"
+     "   'margin-left': $(this).scrollLeft()\n"
+    "}, 100);\n"
+    "}, 200);\n"
+"});\n"
 "</script>"<< endl;
 
     TraceFile << "<body>\n" << endl;
 
     TraceFile << "<div class=\"timeline\">\n" << endl;
-
+    printf("Timeline length:%lu\n",timeline.size());
     for(vector<State>::const_iterator state = timeline.begin(); state != timeline.end(); ++state){
         print_state(*state);
     }
@@ -657,7 +655,7 @@ int main(int argc, char *argv[])
     TraceFile.open(KnobOutputFile.Value().c_str());
     TraceFile << hex;
     TraceFile.setf(ios::showbase);
-    vector<Block> blocks;
+    vector<Block>* blocks = new std::vector<Block>();
     State* initial = new State(blocks);
     timeline.push_back(*initial);
     // Register Image to be called to instrument functions.
