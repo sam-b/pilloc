@@ -7,6 +7,7 @@
 #include <string>
 #include <algorithm>
 #include <stdexcept>
+#include <syscall.h>
 
 /* ===================================================================== */
 /* Names of malloc and free */
@@ -70,10 +71,6 @@ public:
     bool error;
     ADDRINT addr;
     ADDRINT size;
-private:
-    int red;
-    int green;
-    int blue;
 };
 
 Block::Block()
@@ -84,6 +81,8 @@ Block::Block()
     this->minsz = 0x20;
     this->error = false;
     this->color = this->get_color();
+    this->size = 0;
+    this->addr = 0;
 }
 
 Block::~Block()
@@ -152,7 +151,6 @@ public:
     vector<Block>* blocks;
     string errors;
     string info;
-    ADDRINT toFree;
     ADDRINT toRealloc;
 };
 
@@ -162,7 +160,6 @@ State::State(vector<Block>* old_blocks)
     if(!old_blocks->empty()){
         this->blocks->insert(this->blocks->end(),old_blocks->begin(),old_blocks->end());
     }
-    this->toFree = 0;
     this->toRealloc = 0;
     this->info = "";
     this->errors = "";
@@ -180,7 +177,6 @@ set<ADDRINT>* State::boundaries()
         bounds->insert(block->start());
         bounds->insert(block->end());
     }
-    printf("Fetched bounderies - size:%lu\n",bounds->size());
     return bounds;
 }
 
@@ -221,16 +217,14 @@ KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
 
 /* ===================================================================== */
 
-VOID MatchPtr(State state, ADDRINT addr,int *s, Block* match)
+Block* MatchPtr(State state, ADDRINT addr,int *s)
 {
-    
-    match = NULL;
-    s = NULL;
+    *s = 0;
     if(!addr){
         //set everything NULL
-        return;
+        return NULL;
     }
-
+    Block* match = NULL;
     int i = 0;
     for(vector<Block>::iterator block = state.blocks->begin(); block != state.blocks->end(); ++block){
         if(block->addr == addr){
@@ -243,8 +237,9 @@ VOID MatchPtr(State state, ADDRINT addr,int *s, Block* match)
     }
 
     if(!match){
-        //error
+        state.errors.append("Couldn't find block at " + ADDRINTToString(addr));
     }
+    return match;
 
 }
 
@@ -257,9 +252,47 @@ VOID update_boundaries(State* state){
     boundaries.insert(bounds->begin(),bounds->end());
 }
 
+VOID SysBefore(ADDRINT ip, ADDRINT num, ADDRINT arg0, ADDRINT arg1, ADDRINT arg2, ADDRINT arg3, ADDRINT arg4, ADDRINT arg5)
+{
+    if(num == 12){
+        printf("brk(addr=0x%lx)",
+            (unsigned long)arg0);
+    } else if(num == 9){
+        printf("mmap(addr=0x%lx,len=0x%lx,prot=0x%lx,flags=0x%lx,fd=0x%lx,off=0x%lx)",
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            arg4,
+            arg5);
+    }
+}
+
+// Print the return value of the system call
+VOID SysAfter(ADDRINT ret)
+{
+    printf("returns: 0x%lx\n", (unsigned long)ret);
+}
+
+VOID SyscallEntry(THREADID threadIndex, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v)
+{
+    SysBefore(PIN_GetContextReg(ctxt, REG_INST_PTR),
+        PIN_GetSyscallNumber(ctxt, std),
+        PIN_GetSyscallArgument(ctxt, std, 0),
+        PIN_GetSyscallArgument(ctxt, std, 1),
+        PIN_GetSyscallArgument(ctxt, std, 2),
+        PIN_GetSyscallArgument(ctxt, std, 3),
+        PIN_GetSyscallArgument(ctxt, std, 4),
+        PIN_GetSyscallArgument(ctxt, std, 5));
+}
+
+VOID SyscallExit(THREADID threadIndex, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v)
+{
+    SysAfter(PIN_GetSyscallReturn(ctxt, std));
+}
+
 VOID BeforeMalloc(CHAR * name, ADDRINT size)
 {
-    printf("Before malloc\n");
     State* state = new State(timeline.back().blocks);
     Block* b = new Block();
     b->size = size;
@@ -269,40 +302,20 @@ VOID BeforeMalloc(CHAR * name, ADDRINT size)
 
 VOID BeforeFree(CHAR * name, ADDRINT addr)
 {
-    printf("Before free\n");
+    if(!addr) return;
     State* state = new State(timeline.back().blocks);
-    state->toFree = addr;
+    int* s = (int*) malloc(sizeof(int));
+    Block* match = MatchPtr(*state,addr,s);
+    if(match){
+        state->blocks->erase(state->blocks->begin()+*s);
+    }
+    state->info.append("free(" + ADDRINTToString(addr) +")");
     timeline.push_back(*state);
-
-}
-
-VOID AfterFree(ADDRINT ret)
-{
-    printf("After free\n");
-    State* state = &timeline.back();
-    state->info.append("free(" + ADDRINTToString(state->toFree) +") = " + ADDRINTToString(ret));
-    if(state->toFree == 0){
-        timeline.erase(timeline.end());
-        return;
-    }
-    Block* match = NULL;
-    int* s = NULL;
-    MatchPtr(*state,state->toFree,s,match);
-    if(!match){
-        state->toFree = 0;
-        return;
-    }
-    if(!ret){
-        //error
-    }
-    state->toFree = 0;
-    state->blocks->erase(state->blocks->begin()+*s);
     update_boundaries(state);
 }
 
 VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 {
-    printf("Before calloc\n");
     vector<Block>* blocks = timeline.back().blocks;
     State* state = new State(blocks);
     Block* b = new Block();
@@ -313,11 +326,11 @@ VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 
 VOID MallocAfter(ADDRINT ret)
 {
-    printf("After malloc\n");
     State* state = &timeline.back();
     Block *b = &(state->blocks->back());
     if(!ret){
-         state->blocks->erase(state->blocks->end());
+        state->errors+= "Failed to allocate " + ADDRINTToString(b->size) + " bytes.";
+        state->blocks->erase(state->blocks->end());
     } else {
         b->addr = ret;
     }
@@ -327,21 +340,20 @@ VOID MallocAfter(ADDRINT ret)
 
 VOID CallocAfter(ADDRINT ret)
 {
-    printf("After calloc\n");
     State* state = &timeline.back();
     Block *b = &(state->blocks->back());
     if(!ret){
-         state->blocks->erase(state->blocks->end());
+        state->errors+= "Failed to allocate " + ADDRINTToString(b->size) + " bytes.";
+        state->blocks->erase(state->blocks->end());
     } else {
         b->addr = ret;
+        state->info.append("calloc(" + ADDRINTToString(b->size) +") = " + ADDRINTToString(ret));
     }
-    state->info.append("calloc(" + ADDRINTToString(b->size) +") = " + ADDRINTToString(ret));
     update_boundaries(state);
 }
 
 VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
 {
-    printf("Before realloc\n");
     if(!addr){ //effectively a malloc
         BeforeMalloc(name,size);
     } else if(!size){ //effectively a free
@@ -358,30 +370,32 @@ VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
 
 VOID ReallocAfter(ADDRINT ret)
 {
-    printf("After realloc\n");
     State* state = &timeline.back();
+    Block* block = &(state->blocks->back());
     if(!state->toRealloc){
-        if(!state->toFree){
-            MallocAfter(ret);
-        } else {
-            AfterFree(ret);
-        }
-    } else {
-        Block* match = NULL;
-        int* s = NULL;
-        MatchPtr(*state,state->toRealloc,s,match);
+        MallocAfter(ret);
+    } else if(block->size) {
+        int* s = (int*) malloc(sizeof(int));
+        Block* match = MatchPtr(*state,state->toRealloc,s);
         state->toRealloc = 0;
-        if(!match) return;
+        if(!match){
+            state->blocks->erase(state->blocks->end());
+            return;
+        }
         if(!ret){
-
+            block->addr = match->addr;
+            block->size = match->size;
+            block->error = true;
+            block->color = match->color;
+            state->errors.append("failed to realloc(" + ADDRINTToString(match->addr) + "," + ADDRINTToString(match->size) + ")");
         } else {
-            Block* block = &(state->blocks->back());
             block->addr = ret;
             Block newBlock = state->blocks->at(*s);
             newBlock.size = block->size;
             newBlock.addr=ret;
+            newBlock.color = match->color;
             state->blocks->erase(state->blocks->end());
-            state->info.append("realloc(" + ADDRINTToString(newBlock.size) +") = " + ADDRINTToString(ret));
+            state->info.append("realloc(" + ADDRINTToString(match->addr) + "," + ADDRINTToString(newBlock.size) +") = " + ADDRINTToString(ret));
         }
         update_boundaries(state);
     }
@@ -423,8 +437,7 @@ VOID Image(IMG img, VOID *v)
                        IARG_ADDRINT, FREE,
                        IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                        IARG_END);
-        RTN_InsertCall(freeRtn, IPOINT_AFTER, (AFUNPTR)AfterFree,
-                       IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+
         RTN_Close(freeRtn);
     }
 
@@ -659,6 +672,9 @@ int main(int argc, char *argv[])
     State* initial = new State(blocks);
     timeline.push_back(*initial);
     // Register Image to be called to instrument functions.
+    PIN_AddSyscallEntryFunction(SyscallEntry, 0);
+    PIN_AddSyscallExitFunction(SyscallExit, 0);
+
     IMG_AddInstrumentFunction(Image, 0);
     PIN_AddFiniFunction(Fini, 0);
 
