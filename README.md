@@ -1,5 +1,6 @@
 # pilloc
-A pin tool to visualise heap operations
+A pin tool to visualise heap operations.
+![image](/pilloc_example.png)
 # Build and Run
 To Build run:
 ```shell

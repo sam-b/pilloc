@@ -27,7 +27,12 @@ class State;
 class Block;
 class Empty;
 
-void generate_html(void);
+std::ofstream TraceFile;
+
+int unit_width = 10;
+set<ADDRINT> boundaries;
+vector<State> timeline;
+ADDRINT syscall_num = 1000; //random value which couldn't be a real syscall
 
 string ADDRINTToString (ADDRINT a)
 {
@@ -48,11 +53,21 @@ int RandU(int nMin, int nMax)
     return nMin + (int)((double)rand() / (RAND_MAX) * (nMax-nMin+1));
 }
 
-std::ofstream TraceFile;
-
-int unit_width = 10;
-set<ADDRINT> boundaries;
-vector<State> timeline;
+void encode(string& data) {
+    string buffer;
+    buffer.reserve(data.size());
+    for(size_t pos = 0; pos != data.size(); ++pos) {
+        switch(data[pos]) {
+            case '&':  buffer.append("&amp;");       break;
+            case '\"': buffer.append("&quot;");      break;
+            case '\'': buffer.append("&apos;");      break;
+            case '<':  buffer.append("&lt;");        break;
+            case '>':  buffer.append("&gt;");        break;
+            default:   buffer.append(&data[pos], 1); break;
+        }
+    }
+    data.swap(buffer);
+}
 
 class Block
 {
@@ -61,9 +76,8 @@ public:
     ~Block();
     ADDRINT start();
     ADDRINT end();
-    string gen_html(int);
+    string GenHTML(int);
     string color;
-    string get_color();
     int header;
     int footer;
     int round;
@@ -71,6 +85,8 @@ public:
     bool error;
     ADDRINT addr;
     ADDRINT size;
+private:
+    string GetColor();
 };
 
 Block::Block()
@@ -80,7 +96,7 @@ Block::Block()
     this->round = 0x10;
     this->minsz = 0x20;
     this->error = false;
-    this->color = this->get_color();
+    this->color = this->GetColor();
     this->size = 0;
     this->addr = 0;
 }
@@ -103,7 +119,7 @@ ADDRINT Block::end()
     return this->addr - this->header + rsize;
 }
 
-string Block::get_color()
+string Block::GetColor()
 {
     string color = "background-color: rgb(";
     color += IntToString(RandU(0,255));
@@ -115,7 +131,7 @@ string Block::get_color()
     return color;
 }
 
-string Block::gen_html(int width)
+string Block::GenHTML(int width)
 {
     string out = "";
     string color = this->color;
@@ -127,11 +143,9 @@ string Block::gen_html(int width)
     out+= IntToString(unit_width * width);
     out+="em;";
     out+=color;
-    out+=";\">";
-    out+="<strong>";
+    out+=";\"><strong>";
     out+= ADDRINTToString(this->start());
-    out+="</strong><br />";
-    out+="+ ";
+    out+="</strong><br />+ ";
     out+= ADDRINTToString(this->end() - this->start());
     out+=" (";
     out+= ADDRINTToString(this->size);
@@ -188,34 +202,26 @@ public:
     ADDRINT start;
     ADDRINT end;
     bool display;
-    string gen_html(int);
+    string GenHTML(int);
 };
 
 Empty::Empty(){
 
 }
 
-string Empty::gen_html(int width){
+string Empty::GenHTML(int width){
     string out = "<div class=\"";
     out += "block empty\" style=\"width: ";
-    out += IntToString(10);
+    out += IntToString(11);
     out+="em; ";
     out+=";\">";
     out+= "<strong>";
     out+=ADDRINTToString(this->start);
     out+="</strong><br />";
-    out += "+ " + ADDRINTToString(this->end - this->start);
+    out += "+" + ADDRINTToString(this->end - this->start);
     out+="</div>";
     return out;
 }
-/* ===================================================================== */
-/* Commandline Switches */
-/* ===================================================================== */
-
-KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-    "o", "malloctrace.out", "specify trace file name");
-
-/* ===================================================================== */
 
 Block* MatchPtr(State state, ADDRINT addr,int *s)
 {
@@ -265,13 +271,16 @@ VOID SysBefore(ADDRINT ip, ADDRINT num, ADDRINT arg0, ADDRINT arg1, ADDRINT arg2
             arg3,
             arg4,
             arg5);
-    }
+    } 
+    syscall_num = num;
 }
 
 // Print the return value of the system call
 VOID SysAfter(ADDRINT ret)
 {
-    printf("returns: 0x%lx\n", (unsigned long)ret);
+    if(syscall_num == 9 || syscall_num == 12){
+        printf("returns: 0x%lx\n", (unsigned long)ret);
+    }
 }
 
 VOID SyscallEntry(THREADID threadIndex, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v)
@@ -477,26 +486,7 @@ VOID Image(IMG img, VOID *v)
     }
 }
 
-/* ===================================================================== */
-
-VOID Fini(INT32 code, VOID *v)
-{
-    generate_html();
-    TraceFile.close();
-}
-
-/* ===================================================================== */
-/* Print Help Message                                                    */
-/* ===================================================================== */
-   
-INT32 Usage()
-{
-    cerr << "This tool produces a trace of calls to malloc." << endl;
-    cerr << endl << KNOB_BASE::StringKnobSummary() << endl;
-    return -1;
-}
-
-void print_state(State state)
+void PrintState(State state)
 {
     TraceFile << "<div class=\"state ";
     if(state.errors.size()){
@@ -504,10 +494,6 @@ void print_state(State state)
     }
     TraceFile << "\">\n" << endl;
 
-    set<int> known_stops;
-
-    vector<Block> todo;
-    todo.insert(todo.end(),state.blocks->begin(),state.blocks->end());
 
     TraceFile << "<div class=\"line\" style=\"\">\n" << endl;
     Block* current = NULL;
@@ -525,17 +511,14 @@ void print_state(State state)
                         advance(it, last);
                         emp->start = *it;
                         emp->end = *b;
-                        TraceFile << emp->gen_html(i - last) << endl;
+                        TraceFile << emp->GenHTML(i - last) << endl;
                         delete emp;
                         last = i;
                     }
                 }
             }
-        }
-        if(!current){
-            //don't care
         }else if(current->end() == *b){
-            TraceFile << current->gen_html(i - last) << endl;
+            TraceFile << current->GenHTML(i - last) << endl;
             last = i;
             current = NULL;
         }
@@ -543,7 +526,8 @@ void print_state(State state)
     }
     TraceFile << "</div>\n" << endl;
     TraceFile << "<div class=\"log\">" << endl;
-    //TODO html escape
+    encode(state.info);
+    encode(state.errors);
     TraceFile << "<p>" << state.info << "</p>" << endl;
     
     TraceFile << "<p>" << state.errors << "</p>" << endl;
@@ -552,103 +536,118 @@ void print_state(State state)
 
     TraceFile << "</div>\n" << endl;
 }
-void generate_html()
+void GenerateHTML()
 {
-    TraceFile << "<style>" << endl;
-    TraceFile << "body {\n"
-"font-size: 12px;\n"
-"background-color: #EBEBEB;\n"
-"font-family: \"Lucida Console\", Monaco, monospace;\n"
-"width: "
-<< IntToString((boundaries.size() - 1) * (unit_width+1)) <<
-"em;\n"
-"}"
-<< endl;
-
-    TraceFile << "p {\n"
-"margin: 0.8em 0 0 0.1em;\n"
-"}" << endl;
-
-    TraceFile << ".block {\n"
-"float: left;\n"
-"padding: 0.5em 0;\n"
-"text-align: center;\n"
-"color: black;\n"
-"}" << endl;
-
-    TraceFile << ".normal {\n"
-"-webkit-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"-moz-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"}" << endl;
-
-    TraceFile << ".empty + .empty {\n"
-"border-left: 1px solid gray;\n"
-"margin-left: -1px;\n"
-"}" << endl;
-
-    TraceFile << ".empty {\n"
-"color: gray;\n"
-"}" << endl;
-
-    TraceFile << ".line {  }" << endl;
-
-    TraceFile << ".line:after {\n"
-  "content:\"\";\n"
-  "display:table;\n"
-  "clear:both;\n"
-"}" << endl;
-
-    TraceFile << ".state {\n"
-"margin: 0.5em; padding: 0;\n"
-"background-color: white;\n"
-"border-radius: 0.3em;\n"
-"-webkit-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"-moz-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
-"padding: 0.5em;\n"
-"}" << endl;
-
-    TraceFile << ".log {"
-"}" << endl;
-
-    TraceFile << ".error {"
-"color: white;\n"
-"background-color: #8b1820;\n"
-"}" << endl;
-
-    TraceFile << ".error .empty {\n"
-"color: white;\n"
-"}" << endl;
-
-    TraceFile << "</style>\n" << endl;
-
-    TraceFile << "<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js\"></script>" << endl;
-    TraceFile << "<script>"
-"var scrollTimeout = null;\n"
-"$(window).scroll(function(){\n"
-    "if (scrollTimeout) clearTimeout(scrollTimeout);\n"
-    "scrollTimeout = setTimeout(function(){\n"
-    "$('.log').stop();\n"
-    "$('.log').animate({\n"
-     "   'margin-left': $(this).scrollLeft()\n"
-    "}, 100);\n"
-    "}, 200);\n"
-"});\n"
-"</script>"<< endl;
+    TraceFile << 
+    "<style>\n"
+        "body {\n"
+            "font-size: 12px;\n"
+            "background-color: #EBEBEB;\n"
+            "font-family: \"Lucida Console\", Monaco, monospace;\n"
+            "width: "
+            << IntToString((boundaries.size() - 1) * (unit_width+1)) <<
+            "em;\n"
+        "}\n"
+        "p {\n"
+            "margin: 0.8em 0 0 0.1em;\n"
+        "}\n"
+        ".block {\n"
+            "float: left;\n"
+            "padding: 0.5em 0;\n"
+            "text-align: center;\n"
+            "color: black;\n"
+        "}\n"
+        ".normal {\n"
+            "-webkit-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+            "-moz-box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+            "box-shadow: 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+        "}\n"
+        ".empty + .empty {\n"
+            "border-left: 1px solid gray;\n"
+            "margin-left: -1px;\n"
+        "}\n"
+        ".empty {\n"
+            "color: gray;\n"
+        "}\n"
+        ".line {  }\n"
+            ".line:after {\n"
+            "content:\"\";\n"
+            "display:table;\n"
+            "clear:both;\n"
+        "}\n" 
+        ".state {\n"
+            "margin: 0.5em; padding: 0;\n"
+            "background-color: white;\n"
+            "border-radius: 0.3em;\n"
+            "-webkit-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+            "-moz-box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+            "box-shadow: inset 2px 2px 4px 0px rgba(0,0,0,0.80);\n"
+            "padding: 0.5em;\n"
+        "}\n" 
+        ".log {}\n" 
+        ".error {\n"
+            "color: white;\n"
+            "background-color: #8b1820;\n"
+        "}\n" 
+        ".error .empty {\n"
+            "color: white;\n"
+        "}\n" 
+    "</style>\n"
+    "<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js\"></script>\n"
+    "<script>\n"
+        "var scrollTimeout = null;\n"
+        "$(window).scroll(function(){\n"
+            "if (scrollTimeout) clearTimeout(scrollTimeout);\n"
+            "scrollTimeout = setTimeout(function(){\n"
+            "$('.log').stop();\n"
+            "$('.log').animate({\n"
+             "   'margin-left': $(this).scrollLeft()\n"
+            "}, 100);\n"
+            "}, 200);\n"
+        "});\n"
+    "</script>"<< endl;
 
     TraceFile << "<body>\n" << endl;
 
     TraceFile << "<div class=\"timeline\">\n" << endl;
-    printf("Timeline length:%lu\n",timeline.size());
+    //drop first state as its always going to be empty.
+    timeline.erase(timeline.begin());
     for(vector<State>::const_iterator state = timeline.begin(); state != timeline.end(); ++state){
-        print_state(*state);
+        PrintState(*state);
     }
 
     TraceFile << "</div>\n" << endl;
 
     TraceFile << "</body>\n" << endl;
 
+}
+
+/* ===================================================================== */
+
+VOID Fini(INT32 code, VOID *v)
+{
+    GenerateHTML();
+    TraceFile.close();
+}
+
+/* ===================================================================== */
+/* Commandline Switches */
+/* ===================================================================== */
+
+KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
+    "o", "heaptrace.out", "specify trace file name");
+
+/* ===================================================================== */
+
+/* ===================================================================== */
+/* Print Help Message                                                    */
+/* ===================================================================== */
+   
+INT32 Usage()
+{
+    cerr << "This tool produces a visualisation is memory allocator activity." << endl;
+    cerr << endl << KNOB_BASE::StringKnobSummary() << endl;
+    return -1;
 }
 
 /* ===================================================================== */
