@@ -159,16 +159,18 @@ string Block::GenHTML(int width)
 class State
 {
 public:
-    State(vector<Block>* old_blocks);
+    State(vector<Block>* old_blocks, ADDRINT heapsize, ADDRINT utilised);
     ~State();
     set<ADDRINT>* boundaries();
     vector<Block>* blocks;
     string errors;
     string info;
     ADDRINT toRealloc;
+    ADDRINT heapsize;
+    ADDRINT utilised;
 };
 
-State::State(vector<Block>* old_blocks)
+State::State(vector<Block>* old_blocks, ADDRINT heapsize, ADDRINT utilised)
 {
     this->blocks = new vector<Block>();
     if(!old_blocks->empty()){
@@ -177,6 +179,8 @@ State::State(vector<Block>* old_blocks)
     this->toRealloc = 0;
     this->info = "";
     this->errors = "";
+    this->heapsize = heapsize;
+    this->utilised = utilised;
 }
 
 State::~State()
@@ -221,6 +225,11 @@ string Empty::GenHTML(int width){
     out += "+" + ADDRINTToString(this->end - this->start);
     out+="</div>";
     return out;
+}
+
+State* NewState(State* prevState)
+{
+    return new State(prevState->blocks, prevState->heapsize, prevState->utilised);
 }
 
 Block* MatchPtr(State state, ADDRINT addr,int *s)
@@ -302,7 +311,7 @@ VOID SyscallExit(THREADID threadIndex, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID
 
 VOID BeforeMalloc(CHAR * name, ADDRINT size)
 {
-    State* state = new State(timeline.back().blocks);
+    State* state = NewState(&timeline.back());
     Block* b = new Block();
     b->size = size;
     state->blocks->push_back(*b);
@@ -312,7 +321,7 @@ VOID BeforeMalloc(CHAR * name, ADDRINT size)
 VOID BeforeFree(CHAR * name, ADDRINT addr)
 {
     if(!addr) return;
-    State* state = new State(timeline.back().blocks);
+    State* state = NewState(&timeline.back());
     int* s = (int*) malloc(sizeof(int));
     Block* match = MatchPtr(*state,addr,s);
     if(match){
@@ -325,8 +334,7 @@ VOID BeforeFree(CHAR * name, ADDRINT addr)
 
 VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 {
-    vector<Block>* blocks = timeline.back().blocks;
-    State* state = new State(blocks);
+    State* state = NewState(&timeline.back());
     Block* b = new Block();
     b->size = num * size;
     state->blocks->push_back(*b);
@@ -368,7 +376,7 @@ VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
     } else if(!size){ //effectively a free
         BeforeFree(name,addr);
     } else {
-        State* state = new State(timeline.back().blocks);
+        State* state = NewState(&timeline.back());
         timeline.push_back(*state);
         state->toRealloc = addr;
         Block* block = new Block();
@@ -668,7 +676,7 @@ int main(int argc, char *argv[])
     TraceFile << hex;
     TraceFile.setf(ios::showbase);
     vector<Block>* blocks = new std::vector<Block>();
-    State* initial = new State(blocks);
+    State* initial = new State(blocks,0,0);
     timeline.push_back(*initial);
     // Register Image to be called to instrument functions.
     PIN_AddSyscallEntryFunction(SyscallEntry, 0);
