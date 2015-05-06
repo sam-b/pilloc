@@ -38,6 +38,7 @@ class Empty;
 
 std::ofstream TraceFile;
 string target;
+bool record;
 bool track_all;
 
 int unit_width = 10;
@@ -521,7 +522,7 @@ VOID Image(IMG img, VOID *v)
     if(track_all){
         record = true;
     } else {
-        RTN main_rtn = RTN_FindByName(img, target);
+        RTN main_rtn = RTN_FindByName(img, target.c_str());
         if (main_rtn.is_valid()) {
             RTN_Open(main_rtn);
             RTN_InsertCall(main_rtn, IPOINT_BEFORE, (AFUNPTR)RecordMainBegin,
@@ -724,10 +725,10 @@ int main(int argc, char *argv[])
     vector<Block>* blocks = new std::vector<Block>();
     State* initial = new State(blocks,0,0);
     timeline.push_back(*initial);
-    if(KnobTrackTarget.Value().compare("main" == 0)){
-        track = MAIN;
+    if(KnobTrackTarget.Value().compare("main")== 0){
+        target = MAIN;
     } else {
-        track = KnobTrackTarget.Value();
+        target = KnobTrackTarget.Value();
     }
     track_all = KnobTrackAll.Value();
     // Register Image to be called to instrument functions.
