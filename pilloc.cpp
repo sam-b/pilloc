@@ -12,10 +12,19 @@
 /* ===================================================================== */
 /* Names of malloc and free */
 /* ===================================================================== */
+#if defined(TARGET_MAC)
+#define MAIN "_main"
+#define CALLOC "_calloc"
+#define MALLOC "_malloc"
+#define FREE "_free"
+#define REALLOC "_realloc"
+#else
+#define MAIN "main"
 #define CALLOC "calloc"
 #define MALLOC "malloc"
 #define FREE "free"
 #define REALLOC "realloc"
+#endif
 
 using namespace std;
 
@@ -28,6 +37,8 @@ class Block;
 class Empty;
 
 std::ofstream TraceFile;
+string target;
+bool track_all;
 
 int unit_width = 10;
 set<ADDRINT> boundaries;
@@ -311,6 +322,7 @@ VOID SyscallExit(THREADID threadIndex, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID
 
 VOID BeforeMalloc(CHAR * name, ADDRINT size)
 {
+    if(!record) return;
     State* state = NewState(&timeline.back());
     Block* b = new Block();
     b->size = size;
@@ -320,6 +332,7 @@ VOID BeforeMalloc(CHAR * name, ADDRINT size)
 
 VOID BeforeFree(CHAR * name, ADDRINT addr)
 {
+    if(!record) return;
     if(!addr) return;
     State* state = NewState(&timeline.back());
     int* s = (int*) malloc(sizeof(int));
@@ -334,6 +347,7 @@ VOID BeforeFree(CHAR * name, ADDRINT addr)
 
 VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 {
+    if(!record) return;
     State* state = NewState(&timeline.back());
     Block* b = new Block();
     b->size = num * size;
@@ -343,6 +357,7 @@ VOID BeforeCalloc(CHAR * name, ADDRINT num, ADDRINT size)
 
 VOID MallocAfter(ADDRINT ret)
 {
+    if(!record) return;
     State* state = &timeline.back();
     Block *b = &(state->blocks->back());
     if(!ret){
@@ -357,6 +372,7 @@ VOID MallocAfter(ADDRINT ret)
 
 VOID CallocAfter(ADDRINT ret)
 {
+    if(!record) return;
     State* state = &timeline.back();
     Block *b = &(state->blocks->back());
     if(!ret){
@@ -371,6 +387,7 @@ VOID CallocAfter(ADDRINT ret)
 
 VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
 {
+    if(!record) return;
     if(!addr){ //effectively a malloc
         BeforeMalloc(name,size);
     } else if(!size){ //effectively a free
@@ -387,6 +404,7 @@ VOID BeforeRealloc(CHAR * name, ADDRINT addr, ADDRINT size)
 
 VOID ReallocAfter(ADDRINT ret)
 {
+    if(!record) return;
     State* state = &timeline.back();
     Block* block = &(state->blocks->back());
     if(!state->toRealloc){
@@ -416,6 +434,13 @@ VOID ReallocAfter(ADDRINT ret)
         }
         update_boundaries(state);
     }
+}
+
+VOID RecordMainBegin() {
+  record = true;
+}
+VOID RecordMainEnd() {
+  record = false;
 }
 
 /* ===================================================================== */
@@ -491,6 +516,23 @@ VOID Image(IMG img, VOID *v)
                        IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
 
         RTN_Close(reallocRtn);
+    }
+
+    if(track_all){
+        record = true;
+    } else {
+        RTN main_rtn = RTN_FindByName(img, target);
+        if (main_rtn.is_valid()) {
+            RTN_Open(main_rtn);
+            RTN_InsertCall(main_rtn, IPOINT_BEFORE, (AFUNPTR)RecordMainBegin,
+                           IARG_END);
+            RTN_InsertCall(main_rtn, IPOINT_AFTER, (AFUNPTR)RecordMainEnd,
+                           IARG_END);
+            RTN_Close(main_rtn);
+        } else {
+            cout << "Target function could not be found - executable may be stripped, defaulting to tracking all heap activity." << endl;
+            record = true;
+        }
     }
 }
 
@@ -644,6 +686,10 @@ VOID Fini(INT32 code, VOID *v)
 
 KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
     "o", "heaptrace.out", "specify trace file name");
+KNOB<string> KnobTrackTarget(KNOB_MODE_WRITEONCE, "pintool",
+    "f", "main", "Specify function during the course of which you want heap operations monitored");
+KNOB<BOOL> KnobTrackAll(KNOB_MODE_WRITEONCE, "pintool",
+    "a", "0", "If set then all heap operations are tracked");
 
 /* ===================================================================== */
 
@@ -678,6 +724,12 @@ int main(int argc, char *argv[])
     vector<Block>* blocks = new std::vector<Block>();
     State* initial = new State(blocks,0,0);
     timeline.push_back(*initial);
+    if(KnobTrackTarget.Value().compare("main" == 0)){
+        track = MAIN;
+    } else {
+        track = KnobTrackTarget.Value();
+    }
+    track_all = KnobTrackAll.Value();
     // Register Image to be called to instrument functions.
     PIN_AddSyscallEntryFunction(SyscallEntry, 0);
     PIN_AddSyscallExitFunction(SyscallExit, 0);
